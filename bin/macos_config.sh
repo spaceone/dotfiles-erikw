@@ -19,23 +19,105 @@ set -o errexit
 set -o nounset
 set -o pipefail
 set -o xtrace
+config_marker="#dotfiles-macos_config"
+tmp_dir=$(mktemp -d)
+sudo_keepalive_pid=
+sudo_initialized=false
+
+cleanup() {
+	if [ -n "$sudo_keepalive_pid" ]; then
+		kill "$sudo_keepalive_pid" >/dev/null 2>&1 || true
+	fi
+	rm -rf "$tmp_dir"
+}
+
+trap cleanup EXIT
+
+# Start a sudo session only when a privileged change is actually needed.
+ensure_sudo_session() {
+	if ! $sudo_initialized; then
+		sudo -v
+		while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+		sudo_keepalive_pid=$!
+		sudo_initialized=true
+	fi
+}
+
+# Run a command via sudo, initializing the shared sudo keepalive lazily.
+run_with_sudo() {
+	ensure_sudo_session
+	sudo "$@"
+}
+
+# Return success when a defaults array already contains the given string value.
+defaults_array_contains() {
+	local domain=$1
+	local key=$2
+	local value=$3
+
+	defaults read "$domain" "$key" 2>/dev/null | grep -Fq "\"${value}\""
+}
+
+# Ensure every dictionary component in a PlistBuddy path exists before setting leaf values.
+ensure_plist_dict_path() {
+	local plist=$1
+	local path=$2
+	local current_path=
+	local part=
+
+	IFS=':' read -r -a path_parts <<< "${path#:}"
+	for part in "${path_parts[@]}"; do
+		current_path="${current_path}:${part}"
+		if ! /usr/libexec/PlistBuddy -c "Print ${current_path}" "$plist" >/dev/null 2>&1; then
+			/usr/libexec/PlistBuddy -c "Add ${current_path} dict" "$plist"
+		fi
+	done
+}
+
+# Set a string value in a plist, creating the leaf key when it does not exist yet.
+set_plist_string() {
+	local plist=$1
+	local path=$2
+	local value=$3
+
+	if /usr/libexec/PlistBuddy -c "Print ${path}" "$plist" >/dev/null 2>&1; then
+		/usr/libexec/PlistBuddy -c "Set ${path} ${value}" "$plist"
+	else
+		/usr/libexec/PlistBuddy -c "Add ${path} string ${value}" "$plist"
+	fi
+}
+
+# Restart a GUI process only when it is already running, so reruns do not fail on killall.
+restart_process_if_running() {
+	local process_name=$1
+
+	if pgrep -x "$process_name" >/dev/null 2>&1; then
+		killall "$process_name"
+	fi
+}
 
 # From: https://github.com/mathiasbynens/dotfiles/blob/main/.macos
 # Close any open System Settings panes, to prevent them from overriding
 # settings we’re about to change
 osascript -e 'tell application "System Settings" to quit'
-# Ask for the administrator password upfront
-#sudo -v
-# Keep-alive: update existing `sudo` time stamp until this script has finished.
-while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 # }
 
 # System {
 
 # Allow a sudo session to last a bit longer, across terminals.
-sudo sh -c " cat >/etc/sudoers.d/99_my_settings" << EOF
+sudoers_target=/etc/sudoers.d/99_my_settings
+sudoers_has_config_marker=false
+if [ -r "$sudoers_target" ] && grep -Fq "$config_marker" "$sudoers_target"; then
+	sudoers_has_config_marker=true
+elif [ -e "$sudoers_target" ] && run_with_sudo grep -Fq "$config_marker" "$sudoers_target"; then
+	sudoers_has_config_marker=true
+fi
+if ! $sudoers_has_config_marker; then
+	sudoers_tmp="${tmp_dir}/99_my_settings"
+	cat > "$sudoers_tmp" << EOF
+${config_marker}
 # Set cached password timeout in minutes.
-Defaults:USER_NAME timestamp_timeout=16
+Defaults:${USER} timestamp_timeout=16
 # Single password cache for user.
 Defaults !tty_tickets
 
@@ -45,21 +127,50 @@ Cmnd_Alias CMDS_POWER = /sbin/halt, /sbin/shutdown, /sbin/reboot
 # Let power users issue power commands.
 %power ALL = NOPASSWD: CMDS_POWER
 EOF
+	visudo -cf "$sudoers_tmp"
+	run_with_sudo mkdir -p /etc/sudoers.d
+	run_with_sudo install -m 0440 "$sudoers_tmp" "$sudoers_target"
+fi
 
 
 # Create power group and add user for sudo rule above.
 if ! dscacheutil -q group | grep -q "name: power"; then
-	sudo dseditgroup -o create power
+	run_with_sudo dseditgroup -o create power
 fi
-if ! groups | grep -q power; then
-	sudo dseditgroup -o edit -u $USER -p -a $USER -t user power
+if ! id -nG "$USER" | grep -qw power; then
+	run_with_sudo dseditgroup -o edit -u "$USER" -p -a "$USER" -t user power
 fi
 
 # Sudo with Touch ID. Ref: https://news.ycombinator.com/item?id=26303170
 # To work within tmux, need to use pam_reattach. Ref: https://github.com/fabianishere/pam_reattach
 # Try detect if TouchID exist. Ref: https://apple.stackexchange.com/a/450646
-if (bioutil -r | grep -q "Touch ID for unlock") && (! grep -q pam_tid.so /etc/pam.d/sudo) ; then
-	sudo sed -i -e '1s;^;auth       optional        /opt/homebrew/lib/pam/pam_reattach.so\nauth       sufficient     pam_tid.so # Sudo with Touch ID\n;' /etc/pam.d/sudo
+touch_id_supported=false
+if command -v bioutil >/dev/null 2>&1 && bioutil -r 2>/dev/null | grep -q "Touch ID for unlock"; then
+	touch_id_supported=true
+fi
+pam_reattach_path=
+for candidate in /opt/homebrew/lib/pam/pam_reattach.so /usr/local/lib/pam/pam_reattach.so; do
+	if [ -e "$candidate" ]; then
+		pam_reattach_path=$candidate
+		break
+	fi
+done
+if $touch_id_supported && { grep -Fq "$config_marker" /etc/pam.d/sudo || ! grep -q 'pam_tid\.so' /etc/pam.d/sudo; }; then
+	pam_sudo_base="${tmp_dir}/pam_sudo.base"
+	pam_sudo_new="${tmp_dir}/pam_sudo.new"
+	grep -Fv "$config_marker" /etc/pam.d/sudo > "$pam_sudo_base"
+	{
+		if [ -n "$pam_reattach_path" ]; then
+			printf '%s\n' "auth       optional        ${pam_reattach_path} ${config_marker}"
+		fi
+		if ! grep -q 'pam_tid\.so' "$pam_sudo_base"; then
+			printf '%s\n' "auth       sufficient     pam_tid.so ${config_marker}"
+		fi
+		cat "$pam_sudo_base"
+	} > "$pam_sudo_new"
+	if ! cmp -s "$pam_sudo_new" /etc/pam.d/sudo; then
+		run_with_sudo install -m 0444 "$pam_sudo_new" /etc/pam.d/sudo
+	fi
 fi
 # }
 
@@ -155,10 +266,11 @@ defaults write com.apple.dock wvous-br-modifier -int 0
 defaults write com.apple.Dock showhidden -boolean yes
 
 # Add two space separators in dock, to organize icons to correspond to which monitor I want them to be open on. Let them be order by the Spaces order too.
-if ! defaults read com.apple.dock | grep -q spacer-tile; then
+dock_spacer_count=$(defaults read com.apple.dock persistent-apps 2>/dev/null | grep -c spacer-tile || true)
+while [ "$dock_spacer_count" -lt 2 ]; do
 	defaults write com.apple.dock persistent-apps -array-add '{tile-data={}; tile-type="spacer-tile";}'
-	defaults write com.apple.dock persistent-apps -array-add '{tile-data={}; tile-type="spacer-tile";}'
-fi
+	dock_spacer_count=$((dock_spacer_count + 1))
+done
 # }
 
 # Mission Control {
@@ -196,14 +308,18 @@ defaults write NSGlobalDomain AppleLocale en_DE
 # Security & Privacy {
 ## General
 # * Allow apps downloaded from: Anywhere
-sudo spctl --master-disable
+if ! spctl --status 2>/dev/null | grep -q 'assessments disabled'; then
+	run_with_sudo spctl --master-disable
+fi
 # * Check: Require password <immediately> after sleep or screen saver begins
 ## FileVault
 # * Enable FileVault, with recovery key.
 ## Firewall
 # * Turn on firewall.
 # Reference: https://superuser.com/a/1641741
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+if ! /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -qi 'enabled'; then
+	run_with_sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+fi
 ## Privacy
 # * Apple Advertising > uncheck "Personalize Ads".
 # }
@@ -348,12 +464,15 @@ defaults write com.apple.print.PrintingPrefs "Quit When Finished" -bool true
 # * Set computers hostname.
 # Semi-idempotent; assume setting hostname is only desired to do 1 time, and that a default hostname is *.local something.
 if  hostname | grep -q .local; then
-new_hostname=
-while [ -z "$new_hostname" ]; do
-	echo -n "Enter new computer hostname: "
-	read new_hostname
-done;
-sudo scutil --set HostName $new_hostname
+	new_hostname=
+	while [ -z "$new_hostname" ]; do
+		echo -n "Enter new computer hostname: "
+		read -r new_hostname
+	done;
+	current_hostname=$(scutil --get HostName 2>/dev/null || true)
+	if [ "$current_hostname" != "$new_hostname" ]; then
+		run_with_sudo scutil --set HostName "$new_hostname"
+	fi
 fi
 
 
@@ -459,9 +578,15 @@ defaults write com.apple.finder _FXSortFoldersFirst -bool true
 #defaults write NSGlobalDomain NSDocumentSaveNewDocumentsToCloud -bool false
 
 # Enable snap-to-grid for icons on the desktop and in other icon views
-/usr/libexec/PlistBuddy -c "Set :DesktopViewSettings:IconViewSettings:arrangeBy grid" ~/Library/Preferences/com.apple.finder.plist
-/usr/libexec/PlistBuddy -c "Set :FK_StandardViewSettings:IconViewSettings:arrangeBy grid" ~/Library/Preferences/com.apple.finder.plist
-/usr/libexec/PlistBuddy -c "Set :StandardViewSettings:IconViewSettings:arrangeBy grid" ~/Library/Preferences/com.apple.finder.plist
+finder_plist="$HOME/Library/Preferences/com.apple.finder.plist"
+for icon_view_path in \
+	":DesktopViewSettings:IconViewSettings" \
+	":FK_StandardViewSettings:IconViewSettings" \
+	":StandardViewSettings:IconViewSettings"
+do
+	ensure_plist_dict_path "$finder_plist" "$icon_view_path"
+	set_plist_string "$finder_plist" "${icon_view_path}:arrangeBy" grid
+done
 
 # Hide default un-hidable folders in home directory from Finder.
 # Reset with $ chflags nohidden <dir>
@@ -562,8 +687,10 @@ defaults write com.apple.finder _FXSortFoldersFirst -bool true
 
 # See current settings with:  $ defaults read com.apple.Safari
 # Prevent closing window when only pinned tabs left. Ref: https://apple.stackexchange.com/a/260916
-defaults write com.apple.Safari NSUserKeyEquivalents -dict-add 'Close Tab' '<string>@w</string></dict>'
-defaults write com.apple.universalaccess com.apple.custommenu.apps -array-add '<string>com.apple.Safari</string>'
+defaults write com.apple.Safari NSUserKeyEquivalents -dict-add 'Close Tab' '@w'
+if ! defaults_array_contains com.apple.universalaccess com.apple.custommenu.apps com.apple.Safari; then
+	defaults write com.apple.universalaccess com.apple.custommenu.apps -array-add "com.apple.Safari"
+fi
 # Show the full URL in the address bar
 defaults write com.apple.Safari ShowFullURLInSmartSearchField -bool true
 # Safari opens with last session
@@ -575,15 +702,16 @@ defaults write com.apple.Safari InstallExtensionUpdatesAutomatically -bool true
 # Show favorites bar in Safari by default:
 defaults write com.apple.Safari ShowFavoritesBar -bool true
 # Home page
-defaults write com.apple.Safari HomePage -bool true
+# defaults write com.apple.Safari HomePage -string "favorites://"
+defaults write com.apple.Safari HomePage -string "https://dhammapada.at/random"
 
-killall Safari
+restart_process_if_running Safari
 # }
 
 # Misc {
 # Change screenshot destination from Desktop to something sane.
-mkdir -p $HOME/media/images/screenshots
-defaults write com.apple.screencapture location $HOME/media/images/screenshots
+mkdir -p "$HOME/media/images/screenshots"
+defaults write com.apple.screencapture location "$HOME/media/images/screenshots"
 
 # Disable the thumbnail preview that delays saving the screenshot to disk.
 # Reference: https://apple.stackexchange.com/questions/340170/turn-off-macos-mojave-screenshot-preview-thumbnails-with-defaults-write-command
@@ -612,7 +740,8 @@ defaults write -g NSWindowShouldDragOnGesture -bool true
 
 # Prepare user's crontab header.
 set +o errexit
-read -r -d '' tab_new <<'EOF'
+read -r -d '' tab_new <<EOF
+${config_marker}
 # Environment
 #SHELL=/bin/sh
 # ~/ works, but not $HOME strangely enough.
@@ -627,8 +756,16 @@ PATH=~/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/
 #@monthly			   if_fail_notify restic_check.sh
 EOF
 set -o errexit
-tab_old=$(crontab -l)
-if ! crontab -l | grep -q "# Environment"; then
+set +o errexit
+tab_old=$(crontab -l 2>/dev/null)
+crontab_list_exit=$?
+set -o errexit
+if [ "$crontab_list_exit" -ne 0 ] && [ "$crontab_list_exit" -ne 1 ]; then
+	echo "Could not read current crontab" >&2
+	exit "$crontab_list_exit"
+fi
+# Idempotency: assume that if the config marker is in there, my standard crontab has been installed once.
+if ! printf '%s\n' "$tab_old" | grep -Fq "$config_marker"; then
 	if [ -n "$tab_old" ]; then
 		tab_new=$(printf "%s\n%s\n" "$tab_old" "$tab_new")
 	fi
@@ -637,5 +774,6 @@ fi
 
 # }
 
-killall Dock Finder
+restart_process_if_running Dock
+restart_process_if_running Finder
 echo "Please logout or restart for all settings to take effect."

@@ -10,6 +10,12 @@ set -o pipefail
 set -o xtrace
 
 # Installs: Automated {
+# Install homebrew if not found in Intel och Apple Silicon path.
+if ! [ -e /opt/homebrew/bin/brew ] && ! [ -e /usr/local/bin/brew ]; then
+	/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+
 # Add brew to PATH with eval.
 brew_bin=
 if [ -e /opt/homebrew/bin/brew ]; then  # Apple Silicon macs
@@ -21,25 +27,28 @@ else
 	exit 1
 fi
 eval "$(${brew_bin} shellenv)"
+brew_prefix="$("${brew_bin}" --prefix)"
 
 
 # Make homebrew zsh default shell. Reference: https://rick.cogley.info/post/use-homebrew-zsh-instead-of-the-osx-default/
-cur_sh=$(dscl . -read /Users/$USER UserShell | cut -d' ' -f2)
-brew_zsh=$(brew --prefix)/bin/zsh
+cur_sh=$(dscl . -read /Users/"$USER" UserShell | cut -d' ' -f2)
+brew_zsh="${brew_prefix}/bin/zsh"
 if [ "$cur_sh" != "$brew_zsh" ]; then
 	echo "Setting Homebrew zsh as the default shell."
-	sudo dscl . -create /Users/$USER UserShell $(brew --prefix)/bin/zsh
+	sudo dscl . -create /Users/"$USER" UserShell "$brew_zsh"
 fi
 
 # Automatic upgrades. Reference: https://github.com/Homebrew/homebrew-autoupdate
 # There's no nice way to set this up with brew-bundler. Only the tap can be put there, but not of the configuration, so might as well keep it all here until then.
-if ! [ -e "$HOME/Library/LaunchAgents/com.github.domt4.homebrew-autoupdate.plist" ]; then
-	mkdir -p $HOME/Library/LaunchAgents # Might not exist.
+autoupdate_plist="$HOME/Library/LaunchAgents/com.github.domt4.homebrew-autoupdate.plist"
+autoupdate_label="com.github.domt4.homebrew-autoupdate"
+mkdir -p "$HOME/Library/LaunchAgents" # Might not exist.
+if ! [ -e "$autoupdate_plist" ] || ! launchctl print "gui/$UID/$autoupdate_label" >/dev/null 2>&1; then
 	brew tap homebrew/autoupdate
 	# Start upgrade (including casks) every 12 hours.
 	brew autoupdate start 43200 --upgrade --cleanup
-	brew autoupdate status
 fi
+brew autoupdate status
 
 # Notification queue service
 #mkdir -p $HOME/Library/LaunchAgents
@@ -49,9 +58,10 @@ fi
 
 
 # fzf fuzzy finder. Installed via brew. Specify all options on cli for a non-interative setup.
-if ! [ -e $HOME/.config/fzf/fzf.zsh ]; then
-       $(brew --prefix)/opt/fzf/install --xdg  --key-bindings --completion --no-update-rc
-fi
+# This is now handled by zsh setup with zinit.
+# if ! [ -e $HOME/.config/fzf/fzf.zsh ]; then
+#	$(brew --prefix)/opt/fzf/install --xdg  --key-bindings --completion --no-update-rc
+# fi
 
 # tmux-256color terminfo entry.
 # macOS ships an outdated terminfo DB that lacks tmux-256color (unfixed across all macOS versions).
@@ -59,12 +69,14 @@ fi
 # Otherwise warnings shows up when running $(zinit update) like "tput: unknown terminal "tmux-256color""
 if ! toe -a 2>/dev/null | grep -q '^tmux-256color'; then
 	# Use Homebrew's tic (not /usr/bin/tic) — macOS's bundled tic doesn't support reading from stdin via -.
-	"$(brew --prefix)/opt/ncurses/bin/infocmp" tmux-256color | "$(brew --prefix)/opt/ncurses/bin/tic" -xe tmux-256color -
+	"${brew_prefix}/opt/ncurses/bin/infocmp" tmux-256color | "${brew_prefix}/opt/ncurses/bin/tic" -xe tmux-256color -
 fi
 
 
 # Qlty CLI tool. Ref: https://docs.qlty.sh/cli/quickstart
-curl https://qlty.sh | sh
+if ! command -v qlty >/dev/null 2>&1; then
+	curl -fsSL https://qlty.sh | sh
+fi
 
 
 ## Crontab {
