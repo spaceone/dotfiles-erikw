@@ -187,6 +187,9 @@ return {
 
             -- nerdcommenter-like bindings
             -- Normal mode
+            map("n", "gcu", function()
+                api.uncomment.linewise.current()
+            end, { desc = "Comment: force uncomment line" })
             map("n", "gcy", function()
                 vim.cmd("normal! yy") -- yank current line
                 preserve_yank(function()
@@ -196,6 +199,10 @@ return {
 
             -- Visual mode
             map("x", "gci", invert_selection, { desc = "Comment: invert per line independently" })
+            map("x", "gcu", function()
+                feed_esc()
+                api.uncomment.linewise(vim.fn.visualmode())
+            end, { desc = "Comment: force uncomment selection" })
             map("x", "gcy", function()
                 local vmode = vim.fn.visualmode() -- capture mode before leaving visual
                 feed_esc() -- exit visual, commits '< and '> marks
