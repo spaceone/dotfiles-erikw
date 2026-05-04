@@ -173,11 +173,14 @@ return {
             end
 
             -- nerdcommenter-like bindings
-            map("x", "gci", invert_selection, { desc = "Comment: invert per line independently" })
+            -- Normal mode
             map("n", "gcy", function()
                 vim.cmd("normal! yy") -- yank current line
                 api.comment.linewise.current() -- then force-comment it
             end, { desc = "Comment: yank then comment line" })
+
+            -- Visual mode
+            map("x", "gci", invert_selection, { desc = "Comment: invert per line independently" })
 
             -- nerdcommenter-compatible bindings for muscle-memory during transition.
             -- Normal mode
