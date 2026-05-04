@@ -283,7 +283,6 @@ alias remove_swap_files='find . -name "*.sw[op]" -delete'	# Delete all swap file
 alias dusch='du -sch'									# The best file size calculator is a shower.
 alias beep='echo -en "\007"'							# Whoop whoop'
 alias image_dim="identify -format '%w %h\n'"			# Get dimmensions of an image.
-alias cursh="ps -p \$\$ | tail -1 | awk '{print \$NF}' | sed -e 's/^-//g'| tr -d '()'"		# Current shell.
 alias history-off='unset HISTFILE'				# Disable command history for the current shell.
 alias whatismyip='curl ifconfig.me && echo'		# Get external IP-address
 #alias whatismyip='curl ifconfig.co'			# Get external IP-address

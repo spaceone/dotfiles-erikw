@@ -1,0 +1,17 @@
+#!/usr/bin/env zsh
+# Print current shell and options.
+
+local shell_command
+local -a shell_argv
+
+shell_command=$(ps -o command= -p "$$") || return
+shell_argv=(${(z)shell_command})
+
+(( ${#shell_argv} )) || return 1
+
+shell_argv[1]=${shell_argv[1]:t}
+shell_argv[1]=${shell_argv[1]#-}
+shell_argv[1]=${shell_argv[1]#\(}
+shell_argv[1]=${shell_argv[1]%\)}
+
+print -r -- "${(j: :)shell_argv}"
