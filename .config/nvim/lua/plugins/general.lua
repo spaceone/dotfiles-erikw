@@ -158,6 +158,19 @@ return {
             local function feed_esc()
                 vim.api.nvim_feedkeys(esc, "nx", false)
             end
+            local function save_register(name)
+                return vim.deepcopy(vim.fn.getreginfo(name))
+            end
+            local function restore_register(name, reginfo)
+                vim.fn.setreg(name, reginfo.regcontents, reginfo.regtype)
+            end
+            local function preserve_yank(fn)
+                local unnamed = save_register('"')
+                local yank = save_register("0")
+                fn()
+                restore_register('"', unnamed)
+                restore_register("0", yank)
+            end
 
             -- Per-line independent invert: each line toggled based on its own comment state.
             local function invert_selection()
@@ -176,11 +189,21 @@ return {
             -- Normal mode
             map("n", "gcy", function()
                 vim.cmd("normal! yy") -- yank current line
-                api.comment.linewise.current() -- then force-comment it
+                preserve_yank(function()
+                    api.comment.linewise.current() -- then force-comment it
+                end)
             end, { desc = "Comment: yank then comment line" })
 
             -- Visual mode
             map("x", "gci", invert_selection, { desc = "Comment: invert per line independently" })
+            map("x", "gcy", function()
+                local vmode = vim.fn.visualmode() -- capture mode before leaving visual
+                feed_esc() -- exit visual, commits '< and '> marks
+                vim.cmd("normal! gvy") -- re-select via marks and yank
+                preserve_yank(function()
+                    api.comment.linewise(vmode) -- force-comment the '< '> range
+                end)
+            end, { desc = "Comment: yank then comment selection" })
 
             -- nerdcommenter-compatible bindings for muscle-memory during transition.
             -- Normal mode
@@ -229,7 +252,9 @@ return {
                 local vmode = vim.fn.visualmode() -- capture mode before leaving visual
                 feed_esc() -- exit visual, commits '< and '> marks
                 vim.cmd("normal! gvy") -- re-select via marks and yank
-                api.comment.linewise(vmode) -- force-comment the '< '> range
+                preserve_yank(function()
+                    api.comment.linewise(vmode) -- force-comment the '< '> range
+                end)
             end, { desc = "Comment: yank then comment selection" })
         end,
     },
