@@ -41,7 +41,7 @@ This will interactively set up a GitHub SSH key, clone this repo, and run [`./in
 
 
 ### Local branch
-Switch to a local branch for secret changes:
+If really really needed, switch to a local branch for secret changes:
 ```bash
 cd ~/src/github.com/erikw/dotfiles
 git checkout -b local
