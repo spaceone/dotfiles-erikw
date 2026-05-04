@@ -172,6 +172,13 @@ return {
                 vim.api.nvim_win_set_cursor(0, saved_cursor)
             end
 
+            -- nerdcommenter-like bindings
+            map("x", "gci", invert_selection, { desc = "Comment: invert per line independently" })
+            map("n", "gcy", function()
+                vim.cmd("normal! yy") -- yank current line
+                api.comment.linewise.current() -- then force-comment it
+            end, { desc = "Comment: yank then comment line" })
+
             -- nerdcommenter-compatible bindings for muscle-memory during transition.
             -- Normal mode
             map("n", "<Leader>cc", function()
@@ -211,7 +218,6 @@ return {
                 api.toggle.linewise(vim.fn.visualmode())
             end, { desc = "Comment: toggle selection" })
             map("x", "<Leader>ci", invert_selection, { desc = "Comment: invert per line independently" })
-            map("x", "gci", invert_selection, { desc = "Comment: invert per line independently" })
             map("x", "<Leader>cs", function()
                 feed_esc()
                 api.toggle.blockwise(vim.fn.visualmode())
