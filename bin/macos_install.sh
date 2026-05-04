@@ -82,7 +82,7 @@ fi
 ## Crontab {
 # NOTE migrated to dotbot plugin
 # Install ~/bin/dotfiles_backup_local.sh cron entry.
-#tab_entry="0 13 * * *			if_fail_notify dotfiles_backup_local.sh"
+#tab_entry="#0 13 * * *			if_fail_notify dotfiles_backup_local.sh"
 #tab_old=$(crontab -l)
 #if ! echo "$tab_old" | grep -qF "$tab_entry"; then
 #    tab_new=$(printf "%s\n%s\n" "$tab_old" "$tab_entry")

@@ -41,6 +41,8 @@ This will interactively set up a GitHub SSH key, clone this repo, and run [`./in
 
 
 ### Local branch
+If using this: uncomment the cronjob in user's crontab for `~/bin/dotfiles_backup_local.sh`.
+
 If really really needed, switch to a local branch for secret changes:
 ```bash
 cd ~/src/github.com/erikw/dotfiles
