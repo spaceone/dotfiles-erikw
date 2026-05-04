@@ -70,7 +70,7 @@ return {
         opts = {},
     },
 
-    -- The fastest greeter plugin.
+    -- The fastest greeter startup screen plugin.
     {
         "goolord/alpha-nvim",
         dependencies = { "nvim-tree/nvim-web-devicons" },
